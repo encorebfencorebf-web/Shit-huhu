@@ -1,10 +1,11 @@
-name: Android Build
-on:
-  workflow_dispatch:
-  workflow_call:
+name: Android Build & Release
+on: workflow_dispatch
+
+permissions: write-all
+
 jobs:
   build:
-    name: Android Build
+    name: Android Build & Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,37 +45,45 @@ jobs:
           haxelib set flxanimate git
           haxelib set hxdiscord_rpc git
 
-      - name: Rebuild Lime for Android
+      - name: Rebuild Lime for Android (arm64 + armv7)
         run: |
           LIME=$(haxelib libpath lime)
+          echo "== Penanganan ONLY_ARM64 di Lime"
+          grep -rn "ONLY_ARM64" "$LIME" --include=*.hx --include=*.xml --include=*.hxp || echo "Tidak ditemukan"
           echo "== SEBELUM"
           ls -la "${LIME}ndll/Android/"
           haxelib run lime rebuild android -arm64
+          haxelib run lime rebuild android -armv7
           echo "== SESUDAH"
           ls -la "${LIME}ndll/Android/"
 
-      - name: Verify liblime-64.so (fail fast)
+      - name: Verify liblime (fail fast)
         run: |
           LIME=$(haxelib libpath lime)
-          F="${LIME}ndll/Android/liblime-64.so"
-          readelf --dyn-syms "$F" | grep __emutls_get_address || true
-          if readelf --dyn-syms "$F" | grep __emutls_get_address | grep -q " UND "; then
-            echo "liblime-64.so masih rusak (UND __emutls_get_address)"
-            exit 1
-          fi
-          echo "liblime-64.so OK"
+          FAIL=0
+          for N in liblime-64.so liblime-v7.so; do
+            F="${LIME}ndll/Android/$N"
+            echo "== $N"
+            readelf --dyn-syms "$F" | grep __emutls_get_address || true
+            if readelf --dyn-syms "$F" | grep __emutls_get_address | grep -q " UND "; then
+              echo "$N masih rusak (UND __emutls_get_address)"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" = "1" ]; then exit 1; fi
+          echo "Semua liblime OK"
 
       - name: Building the game
         run: |
-          haxelib run lime build android -final -D ONLY_ARM64
+          haxelib run lime build android -final
 
       - name: Inspect native libs
         run: |
           APK=$(ls export/release/android/bin/app/build/outputs/apk/release/*.apk | head -1)
           echo "APK: $APK"
           rm -rf /tmp/apk && mkdir -p /tmp/apk && unzip -q "$APK" -d /tmp/apk
-          ls -la /tmp/apk/lib/arm64-v8a/
-          for f in /tmp/apk/lib/arm64-v8a/*.so; do
+          ls /tmp/apk/lib/
+          for f in /tmp/apk/lib/*/*.so; do
             echo "== $f"
             readelf --dyn-syms "$f" | grep __emutls_get_address || true
           done
@@ -84,3 +93,12 @@ jobs:
         with:
           name: Codename Engine Android
           path: export/release/android/bin/app/build/outputs/apk/release/*
+
+      - name: Publish The Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "mobile-legacy"
+          tag_name: "mobile-legacy"
+          prerelease: false
+          files: |
+            export/release/android/bin/app/build/outputs/apk/release/*.apk
